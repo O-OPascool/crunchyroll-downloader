@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -30,6 +31,39 @@ func isSignStyle(name string) bool {
 		strings.Contains(lower, "caption")
 }
 
+// scaleStyle ajuste la taille de la police, les marges et bordures en fonction de l'échelle PlayResY.
+func scaleStyle(style string, scale float64) string {
+	if scale == 1.0 {
+		return style
+	}
+	parts := strings.Split(style, ",")
+	if len(parts) < 23 {
+		return style
+	}
+
+	scaleFloat := func(s string) string {
+		f, err := strconv.ParseFloat(s, 64)
+		if err != nil {
+			return s
+		}
+		val := f * scale
+		if val < 0 {
+			val = 0
+		}
+		res := strconv.FormatFloat(val, 'f', 2, 64)
+		return strings.TrimRight(strings.TrimRight(res, "0"), ".")
+	}
+
+	parts[2] = scaleFloat(parts[2])   // Fontsize
+	parts[16] = scaleFloat(parts[16]) // Outline
+	parts[17] = scaleFloat(parts[17]) // Shadow
+	parts[19] = scaleFloat(parts[19]) // MarginL
+	parts[20] = scaleFloat(parts[20]) // MarginR
+	parts[21] = scaleFloat(parts[21]) // MarginV
+
+	return strings.Join(parts, ",")
+}
+
 // styleSubtitles reécrit le fichier ASS avec les styles du modèle
 func styleSubtitles(filename string) error {
 	f, err := os.Open(filename)
@@ -42,8 +76,17 @@ func styleSubtitles(filename string) error {
 	inStyles := false
 	stylesWritten := map[string]bool{}
 
+	playResY := 1080.0
+
 	for scanner.Scan() {
 		line := scanner.Text()
+
+		if strings.HasPrefix(line, "PlayResY:") {
+			valStr := strings.TrimSpace(strings.TrimPrefix(line, "PlayResY:"))
+			if val, err := strconv.ParseFloat(valStr, 64); err == nil && val > 0 {
+				playResY = val
+			}
+		}
 
 		// Repère la section styles
 		if strings.HasPrefix(line, "[V4+ Styles]") {
@@ -54,9 +97,10 @@ func styleSubtitles(filename string) error {
 		// Fin de la section styles
 		if inStyles && strings.HasPrefix(line, "[") && !strings.HasPrefix(line, "[V4+ Styles]") {
 			// Injecte les styles du modèle qui n'ont pas encore été écrits
+			scale := playResY / 1080.0
 			for name, style := range modelStyles {
 				if !stylesWritten[name] {
-					lines = append(lines, style)
+					lines = append(lines, scaleStyle(style, scale))
 					stylesWritten[name] = true
 				}
 			}
@@ -81,8 +125,9 @@ func styleSubtitles(filename string) error {
 			}
 
 			if styled, ok := modelStyles[modelKey]; ok && !stylesWritten[crName] {
-				// Garde le nom original du style CR mais applique nos paramètres
-				params := strings.SplitN(styled, ",", 2)
+				// Garde le nom original du style CR mais applique nos paramètres avec la bonne échelle
+				scaledStyle := scaleStyle(styled, playResY/1080.0)
+				params := strings.SplitN(scaledStyle, ",", 2)
 				lines = append(lines, "Style: "+crName+","+params[1])
 				stylesWritten[crName] = true
 			}
