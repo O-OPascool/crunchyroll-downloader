@@ -79,9 +79,64 @@ type segmentJob struct {
 	url   string
 }
 
+// downloadWhole handles SegmentBase-style MPDs where the content is a single file at the BaseURL.
+func downloadWhole(baseUrl string, set *mpd.AdaptationSet, label string) (string, error) {
+	req, err := http.NewRequest(http.MethodGet, baseUrl, nil)
+	if err != nil {
+		return "", fmt.Errorf("downloadWhole: %w", err)
+	}
+	req.Header.Set("Origin", "https://static.crunchyroll.com")
+	req.Header.Set("Referer", "https://static.crunchyroll.com/")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64; rv:147.0) Gecko/20100101 Firefox/147.0")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("downloadWhole: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("downloadWhole: HTTP %d", resp.StatusCode)
+	}
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("downloadWhole read: %w", err)
+	}
+	fmt.Printf("  %s    downloaded %.1f MB\n", label, float64(len(data))/1024/1024)
+
+	filename := getTempFilename(set)
+	file, err := os.Create(filename)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+
+	if err = widevine.DecryptMP4Auto(io.NopCloser(bytes.NewReader(data)), keys, file); err != nil {
+		return "", fmt.Errorf("widevine.DecryptMP4Auto: %w", err)
+	}
+
+	return filename, nil
+}
+
 // downloadParts downloads all segments with resume support, progress bar and MB/s display.
 func downloadParts(baseUrl, representationId *string, set *mpd.AdaptationSet, cacheDir string, label string) (string, error) {
 	os.MkdirAll(cacheDir, 0755)
+
+	// Resolve SegmentTemplate: check AdaptationSet level first, then Representation level
+	segTemplate := set.SegmentTemplate
+	if segTemplate == nil {
+		for _, rep := range set.Representations {
+			if rep.ID != nil && *rep.ID == *representationId && rep.SegmentTemplate != nil {
+				segTemplate = rep.SegmentTemplate
+				break
+			}
+		}
+	}
+	if segTemplate == nil {
+		// SegmentBase / single-file MPD: download the whole file from the BaseURL
+		return downloadWhole(*baseUrl, set, label)
+	}
 
 	// Init segment (cached)
 	initFile := filepath.Join(cacheDir, "init.bin")
@@ -89,7 +144,7 @@ func downloadParts(baseUrl, representationId *string, set *mpd.AdaptationSet, ca
 	if data, err := os.ReadFile(initFile); err == nil {
 		initData = data
 	} else {
-		initUrl := buildUrl(*baseUrl, *representationId, *set.SegmentTemplate.Initialization, nil)
+		initUrl := buildUrl(*baseUrl, *representationId, *segTemplate.Initialization, nil)
 		var err error
 		initData, err = downloadPart(initUrl)
 		if err != nil {
@@ -98,7 +153,7 @@ func downloadParts(baseUrl, representationId *string, set *mpd.AdaptationSet, ca
 		os.WriteFile(initFile, initData, 0644)
 	}
 
-	timeline := expandTimeline(set.SegmentTemplate.SegmentTimeline.S, 1)
+	timeline := expandTimeline(segTemplate.SegmentTimeline.S, 1)
 	total := len(timeline)
 	results := make([][]byte, total)
 
@@ -111,7 +166,7 @@ func downloadParts(baseUrl, representationId *string, set *mpd.AdaptationSet, ca
 			results[i] = data
 			alreadyDone++
 		} else {
-			url := buildUrl(*baseUrl, *representationId, *set.SegmentTemplate.Media, &item)
+			url := buildUrl(*baseUrl, *representationId, *segTemplate.Media, &item)
 			pending = append(pending, segmentJob{index: i, url: url})
 		}
 	}
@@ -222,7 +277,7 @@ func downloadSubs(url string) string {
 	return filename
 }
 
-func downloadEpisode(contentId string, videoQuality, audioQuality, subtitlesLang *string, info EpisodeInfo) {
+func downloadEpisode(contentId string, videoQuality, audioQuality, subtitlesLang *string, info EpisodeInfo) error {
 	dirName, outputFile := buildOutputPath(info, *videoQuality, *audioLang)
 
 	if _, err := os.Stat(dirName); err != nil {
@@ -232,7 +287,7 @@ func downloadEpisode(contentId string, videoQuality, audioQuality, subtitlesLang
 	if _, err := os.Stat(outputFile); err == nil {
 		fmt.Printf("⏭  Already downloaded: S%02dE%02d, skipping...\n",
 			info.EpisodeMetadata.SeasonNumber, info.EpisodeMetadata.EpisodeNumber)
-		return
+		return nil
 	}
 
 	episode := getEpisode(contentId)
@@ -243,18 +298,33 @@ func downloadEpisode(contentId string, videoQuality, audioQuality, subtitlesLang
 		info.EpisodeMetadata.SeriesTitle,
 	)
 
-	manifest := parseManifest(episode.ManifestURL)
+	manifest, err := parseManifest(episode.ManifestURL)
+	if err != nil {
+		return fmt.Errorf("manifest: %w", err)
+	}
+	if len(manifest.Period) == 0 {
+		return fmt.Errorf("manifest has no periods (empty or invalid MPD)")
+	}
 	pssh := getPssh(manifest)
 	if pssh == nil {
-		panic("PSSH not found")
+		return fmt.Errorf("PSSH not found in manifest")
 	}
-	videoSet := manifest.Period[0].AdaptationSets[0]
-	audioSet := manifest.Period[0].AdaptationSets[1]
+	videoSet := findAdaptationSet(manifest.Period[0], "video")
+	audioSet := findAdaptationSet(manifest.Period[0], "audio")
+	if videoSet == nil {
+		return fmt.Errorf("failed to find video adaptation set in manifest")
+	}
+	if audioSet == nil {
+		fmt.Printf("  Failed to find audio adaptation set in manifest (%d adaptation sets available)\n", len(manifest.Period[0].AdaptationSets))
+		for i, set := range manifest.Period[0].AdaptationSets {
+			fmt.Printf("    [%d] MimeType=%q ContentType=%v Representations=%d\n", i, set.MimeType, set.ContentType, len(set.Representations))
+		}
+		return fmt.Errorf("no audio adaptation set found")
+	}
 
-	err := getLicense(*pssh, contentId, episode.Token)
+	err = getLicense(*pssh, contentId, episode.Token)
 	if err != nil {
-		fmt.Printf("License error: %s\n", err)
-		os.Exit(1)
+		return fmt.Errorf("license error: %w", err)
 	}
 
 	cacheBase := fmt.Sprintf(".crdl_cache/%s", contentId)
@@ -268,22 +338,20 @@ func downloadEpisode(contentId string, videoQuality, audioQuality, subtitlesLang
 
 	baseUrl, representationId := getBaseUrl(videoSet, true, *videoQuality)
 	if baseUrl == nil {
-		fmt.Println("Failed to get video URL, check --video-quality")
-		os.Exit(1)
+		return fmt.Errorf("failed to get video URL, check --video-quality")
 	}
 	videoFile, err := downloadParts(baseUrl, representationId, videoSet, cacheBase+"/video", "Vidéo")
 	if err != nil {
-		panic(err)
+		return fmt.Errorf("video download: %w", err)
 	}
 
 	audioBaseUrl, audioRepresentationId := getBaseUrl(audioSet, false, *audioQuality)
 	if audioBaseUrl == nil {
-		fmt.Println("Failed to get audio URL, check --audio-quality")
-		os.Exit(1)
+		return fmt.Errorf("failed to get audio URL, check --audio-quality")
 	}
 	audioFile, err := downloadParts(audioBaseUrl, audioRepresentationId, audioSet, cacheBase+"/audio", "Audio")
 	if err != nil {
-		panic(err)
+		return fmt.Errorf("audio download: %w", err)
 	}
 
 	if success := deleteStream(contentId, episode.Token); !success {
@@ -291,6 +359,7 @@ func downloadEpisode(contentId string, videoQuality, audioQuality, subtitlesLang
 	}
 
 	mergeEverything(videoFile, audioFile, subsFile, outputFile, subtitlesLang, info)
+	return nil
 }
 
 func downloadSeason(videoQuality, audioQuality, subtitlesLang *string, episodes []SeasonEpisode) {
@@ -313,6 +382,9 @@ func downloadSeason(videoQuality, audioQuality, subtitlesLang *string, episodes 
 			},
 			Title: episode.Title,
 		}
-		downloadEpisode(episode.ID, videoQuality, audioQuality, subtitlesLang, info)
+		if err := downloadEpisode(episode.ID, videoQuality, audioQuality, subtitlesLang, info); err != nil {
+			fmt.Printf("⚠  Error on S%02dE%02d: %s, skipping...\n\n",
+				episode.SeasonNumber, episode.EpisodeNumber, err)
+		}
 	}
 }

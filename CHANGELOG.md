@@ -1,5 +1,22 @@
 # Changelog
 
+## [Pascool-5] — 2026-04-25
+
+### Corrections
+- **Crash « Failed to get audio URL »** : les AdaptationSets vidéo/audio ne sont plus cherchés par index fixe (`[0]`/`[1]`) — un lookup dynamique par `MimeType`/`ContentType` est utilisé, avec fallback sur les propriétés des Representations
+- **Crash « PSSH not found »** : la recherche PSSH explore maintenant les ContentProtection au niveau **Representation** en plus du niveau **AdaptationSet**
+- **PSSH PlayReady au lieu de Widevine** : `getPssh` filtre désormais par le `schemeIdUri` Widevine (`edef8ba9-...`) pour ne pas retourner un PSSH PlayReady par erreur
+- **Crash « nil SegmentTemplate »** : `downloadParts` résout le SegmentTemplate au niveau AdaptationSet puis Representation, au lieu de supposer qu'il est toujours au niveau AdaptationSet
+- **Support des manifestes SegmentBase** : ajout de `downloadWhole` pour les épisodes dont le MPD ne contient pas de SegmentTemplate (fichier unique via BaseURL)
+- **Crash silencieux sur manifest HTTP error** : `parseManifest` utilise maintenant `DoRequest` (avec refresh token 401) et vérifie le code HTTP au lieu de parser silencieusement une réponse d'erreur
+- **Crash en chaîne sur batch download** : `downloadEpisode` retourne une erreur au lieu de `panic`/`os.Exit` — un épisode en erreur est sauté et le téléchargement continue
+
+### Améliorations
+- **Fallback qualité audio** : si la qualité demandée (ex: `192k`) n'existe pas dans le manifest, la meilleure qualité disponible est utilisée automatiquement (avec un avertissement affiché)
+- **Recherche PSSH élargie** : tous les AdaptationSets et toutes les Representations sont inspectés, plus seulement le premier
+
+---
+
 ## [Pascool-4] — 2026-04-25
 
 ### Corrections

@@ -54,7 +54,9 @@ func processUrl(url string) {
 			}
 			contentId = (*info.EpisodeMetadata.Versions[correctGuidI]).GUID
 		}
-		downloadEpisode(contentId, videoQuality, audioQuality, subtitlesLang, info)
+		if err := downloadEpisode(contentId, videoQuality, audioQuality, subtitlesLang, info); err != nil {
+			fmt.Printf("⚠  Error: %s\n", err)
+		}
 	} else {
 		seasons := getSeasons(contentId)
 

@@ -17,16 +17,35 @@ import (
 
 var keys []*widevine.Key
 
-// getPssh finds the PSSH in the MPD manifest
-func getPssh(mpd *mpd.MPD) *string {
-	set := mpd.Period[0].AdaptationSets[0]
-	if set == nil {
-		return nil
-	}
+// Widevine DRM scheme URI
+const widevineSchemeURI = "urn:uuid:edef8ba9-79d6-4ace-a3c8-27dcd51d21ed"
 
-	for _, contentProtection := range set.ContentProtections {
-		if contentProtection.CencPSSH != nil {
-			return contentProtection.CencPSSH
+// isWidevine checks if a ContentProtection descriptor belongs to Widevine
+func isWidevine(cp mpd.Descriptor) bool {
+	if cp.SchemeIDURI == nil {
+		return false
+	}
+	return strings.EqualFold(*cp.SchemeIDURI, widevineSchemeURI)
+}
+
+// getPssh finds the Widevine PSSH in the MPD manifest.
+// It searches ContentProtection elements at both the AdaptationSet and Representation levels,
+// filtering specifically for the Widevine DRM scheme.
+func getPssh(m *mpd.MPD) *string {
+	for _, set := range m.Period[0].AdaptationSets {
+		// Check AdaptationSet-level ContentProtection
+		for _, contentProtection := range set.ContentProtections {
+			if isWidevine(contentProtection) && contentProtection.CencPSSH != nil {
+				return contentProtection.CencPSSH
+			}
+		}
+		// Check Representation-level ContentProtection
+		for _, rep := range set.Representations {
+			for _, contentProtection := range rep.ContentProtections {
+				if isWidevine(contentProtection) && contentProtection.CencPSSH != nil {
+					return contentProtection.CencPSSH
+				}
+			}
 		}
 	}
 
