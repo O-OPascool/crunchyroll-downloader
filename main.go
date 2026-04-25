@@ -22,8 +22,13 @@ var (
 )
 
 func processUrl(url string) {
-	contentType := strings.Split(url, "/")[3]
-	contentId := strings.Split(url, "/")[4]
+	parts := strings.Split(url, "/")
+	if len(parts) < 5 {
+		fmt.Printf("Invalid URL format: %s\n", url)
+		return
+	}
+	contentType := parts[3]
+	contentId := parts[4]
 	if len(contentId) != 9 && len(contentId) != 14 {
 		fmt.Printf("Invalid URL format: %s\n", url)
 		return
@@ -34,7 +39,11 @@ func processUrl(url string) {
 	}
 
 	if contentType == "watch" {
-		info := getEpisodeInfo(contentId)
+		info, err := getEpisodeInfo(contentId)
+		if err != nil {
+			fmt.Printf("Error fetching episode info: %s\n", err)
+			return
+		}
 		if info.EpisodeMetadata.AudioLocale != *audioLang {
 			correctGuidI := slices.IndexFunc(info.EpisodeMetadata.Versions, func(v *DubVersion) bool {
 				return v.AudioLocale == *audioLang

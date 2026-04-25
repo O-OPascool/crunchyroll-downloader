@@ -15,8 +15,8 @@ type Episode struct {
 	Subtitles map[string]*Subtitle `json:"subtitles"`
 	// Token to give to the Widevine CDM challenge
 	Token string `json:"token"`
-	// Error, `nil` if there's no error
-	Error *string `json:"error"`
+	// Error, can be a string or a number from the API
+	Error json.RawMessage `json:"error,omitempty"`
 }
 
 type Subtitle struct {
@@ -47,8 +47,8 @@ func getEpisode(id string) Episode {
 	if err = json.Unmarshal(body, &episode); err != nil {
 		panic(err)
 	}
-	if episode.Error != nil {
-		print("Error:", *episode.Error)
+	if len(episode.Error) > 0 && string(episode.Error) != "null" {
+		fmt.Println("Error:", string(episode.Error))
 		os.Exit(1)
 	}
 
@@ -80,29 +80,32 @@ type DubVersion struct {
 	GUID        string `json:"guid"`
 }
 
-func getEpisodeInfo(id string) EpisodeInfo {
+func getEpisodeInfo(id string) (EpisodeInfo, error) {
 	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("https://www.crunchyroll.com/content/v2/cms/objects/%s?ratings=true&preferred_audio_language=ja-JP&locale=en-US", id), nil)
 	if err != nil {
-		panic(err)
+		return EpisodeInfo{}, fmt.Errorf("getEpisodeInfo: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64; rv:147.0) Gecko/20100101 Firefox/147.0")
 	resp, err := DoRequest(req)
 	if err != nil {
-		panic(err)
+		return EpisodeInfo{}, fmt.Errorf("getEpisodeInfo: %w", err)
 	}
 	defer resp.Body.Close()
 
 	var info EpisodeMetadataResponse
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		panic(err)
+		return EpisodeInfo{}, fmt.Errorf("getEpisodeInfo: %w", err)
 	}
 	if err = json.Unmarshal(body, &info); err != nil {
-		panic(err)
+		return EpisodeInfo{}, fmt.Errorf("getEpisodeInfo: %w", err)
+	}
+	if len(info.Data) == 0 {
+		return EpisodeInfo{}, fmt.Errorf("getEpisodeInfo: no data returned for episode %s", id)
 	}
 
-	return info.Data[0]
+	return info.Data[0], nil
 }
 
 // deleteStream removes the stream to make Crunchyroll think we "left" the playback

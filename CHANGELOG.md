@@ -1,5 +1,34 @@
 # Changelog
 
+## [Pascool-4] — 2026-04-25
+
+### Corrections
+- **Crash JSON `Episode.error`** : l'API Crunchyroll peut renvoyer le champ `error` sous forme de nombre au lieu d'une string — le type est maintenant `json.RawMessage` pour accepter n'importe quel type
+- **Crash sur URL mal formatée** : `processUrl` ne panic plus si l'URL contient moins de 5 segments
+- **Crash sur épisode introuvable** : `getEpisodeInfo` retourne une erreur propre au lieu de panic sur un tableau `data` vide
+- **Crash sur saison vide** : `downloadSeason` vérifie que la liste d'épisodes n'est pas vide avant d'y accéder
+- **Boucle infinie sur token invalide** : `DoRequest` limitée à 1 retry en cas de 401, au lieu d'une récursion infinie
+- **Erreur silencieuse dans `token.go`** : l'erreur de `io.ReadAll` était ignorée (variable `err` shadowed) — maintenant correctement vérifiée
+
+### Builds
+- Binaires cross-compilés : `crdl-windows.exe`, `crdl-macos-arm64`, `crdl-macos-intel`, `crdl-linux`
+
+---
+
+## [Pascool-3] — 2026-04-25
+
+### Améliorations
+- **Restyling sous-titres entièrement revu** à partir d'un modèle fansub de référence :
+  - Police **Trebuchet MS 66px** (calibrée pour 1920×1080, identique aux fansubs français professionnels)
+  - Contour noir 3px + ombre 3px pour une lisibilité maximale
+  - Marges 75px (plus d'espace par rapport au bord)
+  - Styles complets : `Default`, `Italique`, `TiretsDefault`, `TiretsItalique`, `Sign`
+  - Les panneaux/textes à l'écran (`Sign`, `Titre`, `Caption`) conservent leur style dédié (Arial, fond sombre)
+  - Les noms de styles CR originaux sont préservés (les événements continuent de fonctionner)
+  - `ScaledBorderAndShadow: yes` forcé pour un rendu correct sur tous les players
+
+---
+
 ## [Pascool-2] — 2026-04-25
 
 ### Ajouts
@@ -28,6 +57,7 @@
 - Suppression de la fonction `sanitize` dupliquée (maintenant `sanitizeForFS` dans `output.go`)
 - Affichage `⏭` propre pour les épisodes déjà téléchargés
 
+
 ---
 
 ## [original] — CuteTenshii
@@ -38,17 +68,3 @@
 - 10 workers parallèles
 - Retry avec backoff sur erreur réseau
 - Batch download via fichier texte
-
----
-
-## [Pascool-3] — 2026-04-25
-
-### Améliorations
-- **Restyling sous-titres entièrement revu** à partir d'un modèle fansub de référence :
-  - Police **Trebuchet MS 66px** (calibrée pour 1920×1080, identique aux fansubs français professionnels)
-  - Contour noir 3px + ombre 3px pour une lisibilité maximale
-  - Marges 75px (plus d'espace par rapport au bord)
-  - Styles complets : `Default`, `Italique`, `TiretsDefault`, `TiretsItalique`, `Sign`
-  - Les panneaux/textes à l'écran (`Sign`, `Titre`, `Caption`) conservent leur style dédié (Arial, fond sombre)
-  - Les noms de styles CR originaux sont préservés (les événements continuent de fonctionner)
-  - `ScaledBorderAndShadow: yes` forcé pour un rendu correct sur tous les players

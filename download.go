@@ -294,6 +294,10 @@ func downloadEpisode(contentId string, videoQuality, audioQuality, subtitlesLang
 }
 
 func downloadSeason(videoQuality, audioQuality, subtitlesLang *string, episodes []SeasonEpisode) {
+	if len(episodes) == 0 {
+		fmt.Println("⚠  No episodes found in this season, skipping...")
+		return
+	}
 	fmt.Printf("📦 Season %d of %s — %d episodes\n\n",
 		episodes[0].SeasonNumber, episodes[0].SeriesTitle, len(episodes))
 
