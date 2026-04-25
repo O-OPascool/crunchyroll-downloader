@@ -6,16 +6,15 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
-	"sync/atomic"
-	"time"
 
 	widevine "github.com/iyear/gowidevine"
 	"github.com/unki2aut/go-mpd"
 )
 
-const maxWorkers = 10
+const maxWorkers = 16
 
 func buildUrl(base, representationId, file string, partNum *int64) string {
 	if partNum != nil {
@@ -28,10 +27,6 @@ func buildUrl(base, representationId, file string, partNum *int64) string {
 func downloadPart(url string) ([]byte, error) {
 	maxRetries := 5
 	for attempt := 0; attempt < maxRetries; attempt++ {
-		if attempt > 0 {
-			time.Sleep(time.Duration(attempt) * 2 * time.Second)
-		}
-
 		req, err := http.NewRequest(http.MethodGet, url, nil)
 		if err != nil {
 			return nil, err
@@ -40,34 +35,29 @@ func downloadPart(url string) ([]byte, error) {
 		req.Header.Set("Referer", "https://static.crunchyroll.com/")
 		req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64; rv:147.0) Gecko/20100101 Firefox/147.0")
 		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
+		if err != nil || resp.StatusCode != 200 {
+			if resp != nil {
+				resp.Body.Close()
+			}
 			if attempt < maxRetries-1 {
 				continue
 			}
-			return nil, fmt.Errorf("failed after %d retries: %w", maxRetries, err)
+			return nil, fmt.Errorf("failed after %d retries", maxRetries)
 		}
-		if resp.StatusCode != 200 {
-			resp.Body.Close()
-			if attempt < maxRetries-1 {
-				continue
-			}
-			return nil, fmt.Errorf("failed after %d retries, status: %d", maxRetries, resp.StatusCode)
-		}
-
 		body, err := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		if err != nil {
 			if attempt < maxRetries-1 {
 				continue
 			}
-			return nil, fmt.Errorf("failed reading body after %d retries: %w", maxRetries, err)
+			return nil, fmt.Errorf("body read failed after %d retries: %w", maxRetries, err)
 		}
 		return body, nil
 	}
 	return nil, fmt.Errorf("failed after %d retries", maxRetries)
 }
 
-func getFilename(set *mpd.AdaptationSet) string {
+func getTempFilename(set *mpd.AdaptationSet) string {
 	if set == nil {
 		f, _ := os.CreateTemp("", "crdl-subs-*.ass")
 		return f.Name()
@@ -89,69 +79,111 @@ type segmentJob struct {
 	url   string
 }
 
-func downloadParts(baseUrl, representationId *string, set *mpd.AdaptationSet) (string, error) {
-	initUrl := buildUrl(*baseUrl, *representationId, *set.SegmentTemplate.Initialization, nil)
-	initData, err := downloadPart(initUrl)
-	if err != nil {
-		return "", err
+// downloadParts downloads all segments with resume support, progress bar and MB/s display.
+func downloadParts(baseUrl, representationId *string, set *mpd.AdaptationSet, cacheDir string, label string) (string, error) {
+	os.MkdirAll(cacheDir, 0755)
+
+	// Init segment (cached)
+	initFile := filepath.Join(cacheDir, "init.bin")
+	var initData []byte
+	if data, err := os.ReadFile(initFile); err == nil {
+		initData = data
+	} else {
+		initUrl := buildUrl(*baseUrl, *representationId, *set.SegmentTemplate.Initialization, nil)
+		var err error
+		initData, err = downloadPart(initUrl)
+		if err != nil {
+			return "", fmt.Errorf("init segment: %w", err)
+		}
+		os.WriteFile(initFile, initData, 0644)
 	}
 
 	timeline := expandTimeline(set.SegmentTemplate.SegmentTimeline.S, 1)
 	total := len(timeline)
 	results := make([][]byte, total)
-	var downloadErr error
-	var errOnce sync.Once
-	var done atomic.Int64
 
-	jobs := make(chan segmentJob, total)
-	var wg sync.WaitGroup
-
-	for w := 0; w < maxWorkers; w++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for job := range jobs {
-				data, err := downloadPart(job.url)
-				if err != nil {
-					errOnce.Do(func() { downloadErr = err })
-					return
-				}
-				results[job.index] = data
-				count := done.Add(1)
-				fmt.Printf("\rDownloaded %v of %v segments (%v%%)", count, total, (100*count)/int64(total))
-			}
-		}()
-	}
-
+	// Check already cached segments
+	pending := make([]segmentJob, 0, total)
+	alreadyDone := int64(0)
 	for i, item := range timeline {
-		url := buildUrl(*baseUrl, *representationId, *set.SegmentTemplate.Media, &item)
-		jobs <- segmentJob{index: i, url: url}
+		segFile := filepath.Join(cacheDir, fmt.Sprintf("seg_%05d.bin", i))
+		if data, err := os.ReadFile(segFile); err == nil && len(data) > 0 {
+			results[i] = data
+			alreadyDone++
+		} else {
+			url := buildUrl(*baseUrl, *representationId, *set.SegmentTemplate.Media, &item)
+			pending = append(pending, segmentJob{index: i, url: url})
+		}
 	}
-	close(jobs)
-	wg.Wait()
 
-	if downloadErr != nil {
-		return "", downloadErr
+	pb := NewProgressBar(int64(total), label)
+	pb.SetDone(alreadyDone)
+	pb.render()
+
+	if len(pending) > 0 {
+		jobs := make(chan segmentJob, len(pending))
+		var mu sync.Mutex
+		var downloadErr error
+		var wg sync.WaitGroup
+
+		for w := 0; w < maxWorkers; w++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for job := range jobs {
+					data, err := downloadPart(job.url)
+					if err != nil {
+						mu.Lock()
+						if downloadErr == nil {
+							downloadErr = err
+						}
+						mu.Unlock()
+						return
+					}
+					segFile := filepath.Join(cacheDir, fmt.Sprintf("seg_%05d.bin", job.index))
+					os.WriteFile(segFile, data, 0644)
+
+					mu.Lock()
+					results[job.index] = data
+					mu.Unlock()
+
+					pb.Add(int64(len(data)))
+				}
+			}()
+		}
+
+		for _, job := range pending {
+			jobs <- job
+		}
+		close(jobs)
+		wg.Wait()
+
+		if downloadErr != nil {
+			return "", downloadErr
+		}
 	}
 
-	fmt.Println("\nFinished downloading!")
+	pb.Done()
 
+	// Concatenate init + all segments then decrypt
 	var parts []byte
 	parts = append(parts, initData...)
 	for _, data := range results {
 		parts = append(parts, data...)
 	}
 
-	filename := getFilename(set)
+	filename := getTempFilename(set)
 	file, err := os.Create(filename)
 	if err != nil {
 		return "", err
 	}
 	defer file.Close()
+
 	if err = widevine.DecryptMP4Auto(io.NopCloser(bytes.NewReader(parts)), keys, file); err != nil {
 		return "", fmt.Errorf("widevine.DecryptMP4Auto: %w", err)
 	}
 
+	os.RemoveAll(cacheDir)
 	return filename, nil
 }
 
@@ -174,7 +206,7 @@ func downloadSubs(url string) string {
 		panic(err)
 	}
 
-	filename := getFilename(nil)
+	filename := getTempFilename(nil)
 	file, err := os.Create(filename)
 	if err != nil {
 		panic(err)
@@ -182,40 +214,34 @@ func downloadSubs(url string) string {
 	file.Write(body)
 	file.Close()
 
+	// Apply nice styling
+	if err := styleSubtitles(filename); err != nil {
+		fmt.Printf("  Warning: could not restyle subtitles: %v\n", err)
+	}
+
 	return filename
 }
 
 func downloadEpisode(contentId string, videoQuality, audioQuality, subtitlesLang *string, info EpisodeInfo) {
-	sanitize := func(s string) string {
-		illegal := []string{"\\", "/", ":", "*", "?", "\"", "<", ">", "|"}
-		res := s
-		for _, char := range illegal {
-			res = strings.ReplaceAll(res, char, "_")
-		}
-		return strings.TrimRight(res, " .")
+	dirName, outputFile := buildOutputPath(info, *videoQuality, *audioLang)
+
+	if _, err := os.Stat(dirName); err != nil {
+		_ = os.MkdirAll(dirName, 0777)
 	}
-
-	cleanSeriesTitle := sanitize(info.EpisodeMetadata.SeriesTitle)
-
-	if _, err := os.Stat(cleanSeriesTitle); err != nil {
-		_ = os.MkdirAll(cleanSeriesTitle, 0777)
-	}
-
-	outputFile := fmt.Sprintf("%s/%s S%02vE%02v [%s].mkv",
-		cleanSeriesTitle,
-		cleanSeriesTitle,
-		info.EpisodeMetadata.SeasonNumber, 
-		info.EpisodeMetadata.EpisodeNumber,
-		*videoQuality,
-	)
 
 	if _, err := os.Stat(outputFile); err == nil {
-		fmt.Printf("Episode %v is already downloaded, skipping...\n", info.EpisodeMetadata.EpisodeNumber)
+		fmt.Printf("⏭  Already downloaded: S%02dE%02d, skipping...\n",
+			info.EpisodeMetadata.SeasonNumber, info.EpisodeMetadata.EpisodeNumber)
 		return
 	}
 
 	episode := getEpisode(contentId)
-	fmt.Printf("Downloading: %s (S%02vE%02v) from %s\n", info.Title, info.EpisodeMetadata.SeasonNumber, info.EpisodeMetadata.EpisodeNumber, info.EpisodeMetadata.SeriesTitle)
+	fmt.Printf("⬇  S%02dE%02d - %s (%s)\n",
+		info.EpisodeMetadata.SeasonNumber,
+		info.EpisodeMetadata.EpisodeNumber,
+		info.Title,
+		info.EpisodeMetadata.SeriesTitle,
+	)
 
 	manifest := parseManifest(episode.ManifestURL)
 	pssh := getPssh(manifest)
@@ -227,47 +253,49 @@ func downloadEpisode(contentId string, videoQuality, audioQuality, subtitlesLang
 
 	err := getLicense(*pssh, contentId, episode.Token)
 	if err != nil {
-		fmt.Printf("Error: %s", err)
+		fmt.Printf("License error: %s\n", err)
 		os.Exit(1)
 	}
+
+	cacheBase := fmt.Sprintf(".crdl_cache/%s", contentId)
 
 	subtitles := episode.Subtitles[*subtitlesLang]
 	var subsFile string
 	if subtitles != nil {
-		fmt.Printf("Downloading subtitles for %s language...\n", languageNames[*subtitlesLang])
+		fmt.Printf("  Subtitles (%s)...\n", languageNames[*subtitlesLang])
 		subsFile = downloadSubs(subtitles.URL)
-		fmt.Println("Downloaded subtitles!")
 	}
 
 	baseUrl, representationId := getBaseUrl(videoSet, true, *videoQuality)
 	if baseUrl == nil {
-		print("Failed to get the video base URL, maybe the video quality you entered is wrong?\n")
+		fmt.Println("Failed to get video URL, check --video-quality")
 		os.Exit(1)
 	}
-	videoFile, err := downloadParts(baseUrl, representationId, videoSet)
+	videoFile, err := downloadParts(baseUrl, representationId, videoSet, cacheBase+"/video", "Vidéo")
 	if err != nil {
 		panic(err)
 	}
 
 	audioBaseUrl, audioRepresentationId := getBaseUrl(audioSet, false, *audioQuality)
 	if audioBaseUrl == nil {
-		print("Failed to get the audio base URL, maybe the audio quality you entered is wrong?\n")
+		fmt.Println("Failed to get audio URL, check --audio-quality")
 		os.Exit(1)
 	}
-	audioFile, err := downloadParts(audioBaseUrl, audioRepresentationId, audioSet)
+	audioFile, err := downloadParts(audioBaseUrl, audioRepresentationId, audioSet, cacheBase+"/audio", "Audio")
 	if err != nil {
 		panic(err)
 	}
 
 	if success := deleteStream(contentId, episode.Token); !success {
-		print("Failed to remove the player stream, you will probably have issues downloading other episodes.\n")
+		fmt.Println("Warning: failed to delete stream token")
 	}
 
 	mergeEverything(videoFile, audioFile, subsFile, outputFile, subtitlesLang, info)
 }
 
 func downloadSeason(videoQuality, audioQuality, subtitlesLang *string, episodes []SeasonEpisode) {
-	fmt.Printf("Downloading season %v of %s (%v episodes)\n\n", episodes[0].SeasonNumber, episodes[0].SeriesTitle, len(episodes))
+	fmt.Printf("📦 Season %d of %s — %d episodes\n\n",
+		episodes[0].SeasonNumber, episodes[0].SeriesTitle, len(episodes))
 
 	for _, episode := range episodes {
 		info := EpisodeInfo{

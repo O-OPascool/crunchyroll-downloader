@@ -2,11 +2,12 @@ package main
 
 import (
 	"bufio"
-	"flag"
 	"fmt"
 	"os"
 	"slices"
 	"strings"
+
+	"flag"
 )
 
 var (
@@ -17,6 +18,7 @@ var (
 	audioQuality  = flag.String("audio-quality", "192k", "Audio quality")
 	seasonNumber  = flag.Int("season", 0, "Season number. Not used if an episode link is entered")
 	etpRt         = flag.String("etp-rt", "", "The \"etp_rt\" cookie value of your account")
+	releaseTag    = flag.String("tag", "Pascool", "Release tag appended to the filename")
 )
 
 func processUrl(url string) {
@@ -37,15 +39,12 @@ func processUrl(url string) {
 			correctGuidI := slices.IndexFunc(info.EpisodeMetadata.Versions, func(v *DubVersion) bool {
 				return v.AudioLocale == *audioLang
 			})
-
 			if correctGuidI == -1 {
-				print("! Invalid audio locale. Please put the locale in the \"ja-JP\", \"en-US\"... format.\n")
+				fmt.Println("! Invalid audio locale. Format: \"ja-JP\", \"en-US\"...")
 				return
 			}
-			correctGuid := info.EpisodeMetadata.Versions[correctGuidI]
-			contentId = (*correctGuid).GUID
+			contentId = (*info.EpisodeMetadata.Versions[correctGuidI]).GUID
 		}
-
 		downloadEpisode(contentId, videoQuality, audioQuality, subtitlesLang, info)
 	} else {
 		seasons := getSeasons(contentId)
@@ -62,12 +61,10 @@ func processUrl(url string) {
 				fmt.Printf("This anime has no season %v!\n", *seasonNumber)
 				return
 			}
-
 			episodes := getSeasonEpisodes(seasonId)
 			downloadSeason(videoQuality, audioQuality, subtitlesLang, episodes)
 		} else {
-			print("No season number specified, downloading all seasons...\n")
-
+			fmt.Println("No season specified, downloading all seasons...")
 			for _, season := range seasons {
 				episodes := getSeasonEpisodes(season.ID)
 				downloadSeason(videoQuality, audioQuality, subtitlesLang, episodes)
@@ -86,7 +83,7 @@ func main() {
 		os.Exit(1)
 	}
 	if *etpRt == "" {
-		fmt.Println("You must specify the \"-etp-rt\" option!\n- Open Crunchyroll on your browser and log in.\n- Open developer tools (Ctrl+Shift+I), go to \"Application\", and then \"Cookies\".\n- The value of the \"ept_rt\" cookie is what you need to input into this option.")
+		fmt.Println("You must specify the \"-etp-rt\" option!")
 		os.Exit(1)
 	}
 
