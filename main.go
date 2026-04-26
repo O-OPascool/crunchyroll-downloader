@@ -4,24 +4,36 @@ import (
 	"bufio"
 	"fmt"
 	"os"
-	"slices"
 	"strings"
 
 	"flag"
 )
 
 var (
-	token         = ""
-	audioLang     = flag.String("audio-lang", "ja-JP", "Audio language")
-	subtitlesLang = flag.String("subs-lang", "en-US", "Subtitles language")
-	videoQuality  = flag.String("video-quality", "1080p", "Video quality")
-	audioQuality  = flag.String("audio-quality", "192k", "Audio quality")
-	seasonNumber  = flag.Int("season", 0, "Season number. Not used if an episode link is entered")
-	etpRt         = flag.String("etp-rt", "", "The \"etp_rt\" cookie value of your account")
-	releaseTag    = flag.String("tag", "Pascool", "Release tag appended to the filename")
+	token        = ""
+	audioLangs   = flag.String("audio-langs", "ja-JP", "Comma-separated list of audio languages (e.g. \"ja-JP,fr-FR\")")
+	subsLangs    = flag.String("subs-langs", "en-US", "Comma-separated list of subtitle languages, or \"all\" (e.g. \"en-US,fr-FR\")")
+	videoQuality = flag.String("video-quality", "1080p", "Video quality")
+	audioQuality = flag.String("audio-quality", "192k", "Audio quality")
+	seasonNumber = flag.Int("season", 0, "Season number. Not used if an episode link is entered")
+	etpRt        = flag.String("etp-rt", "", "The \"etp_rt\" cookie value of your account")
+	releaseTag   = flag.String("tag", "Pascool", "Release tag appended to the filename")
 )
 
-func processUrl(url string) {
+// parseCommaSeparated splits a comma-separated flag value into a trimmed slice
+func parseCommaSeparated(val string) []string {
+	parts := strings.Split(val, ",")
+	var result []string
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			result = append(result, p)
+		}
+	}
+	return result
+}
+
+func processUrl(url string, aLangs, sLangs []string) {
 	parts := strings.Split(url, "/")
 	if len(parts) < 5 {
 		fmt.Printf("Invalid URL format: %s\n", url)
@@ -44,17 +56,7 @@ func processUrl(url string) {
 			fmt.Printf("Error fetching episode info: %s\n", err)
 			return
 		}
-		if info.EpisodeMetadata.AudioLocale != *audioLang {
-			correctGuidI := slices.IndexFunc(info.EpisodeMetadata.Versions, func(v *DubVersion) bool {
-				return v.AudioLocale == *audioLang
-			})
-			if correctGuidI == -1 {
-				fmt.Println("! Invalid audio locale. Format: \"ja-JP\", \"en-US\"...")
-				return
-			}
-			contentId = (*info.EpisodeMetadata.Versions[correctGuidI]).GUID
-		}
-		if err := downloadEpisode(contentId, videoQuality, audioQuality, subtitlesLang, info); err != nil {
+		if err := downloadEpisode(contentId, videoQuality, audioQuality, aLangs, sLangs, info); err != nil {
 			fmt.Printf("⚠  Error: %s\n", err)
 		}
 	} else {
@@ -73,12 +75,12 @@ func processUrl(url string) {
 				return
 			}
 			episodes := getSeasonEpisodes(seasonId)
-			downloadSeason(videoQuality, audioQuality, subtitlesLang, episodes)
+			downloadSeason(videoQuality, audioQuality, aLangs, sLangs, episodes)
 		} else {
 			fmt.Println("No season specified, downloading all seasons...")
 			for _, season := range seasons {
 				episodes := getSeasonEpisodes(season.ID)
-				downloadSeason(videoQuality, audioQuality, subtitlesLang, episodes)
+				downloadSeason(videoQuality, audioQuality, aLangs, sLangs, episodes)
 			}
 		}
 	}
@@ -97,6 +99,9 @@ func main() {
 		fmt.Println("You must specify the \"-etp-rt\" option!")
 		os.Exit(1)
 	}
+
+	aLangs := parseCommaSeparated(*audioLangs)
+	sLangs := parseCommaSeparated(*subsLangs)
 
 	token = GetAccessToken(*etpRt)
 
@@ -120,10 +125,10 @@ func main() {
 		fmt.Printf("Found %d URLs to download\n\n", len(urls))
 		for i, u := range urls {
 			fmt.Printf("=== [%d/%d] %s ===\n", i+1, len(urls), u)
-			processUrl(u)
+			processUrl(u, aLangs, sLangs)
 			fmt.Println()
 		}
 	} else {
-		processUrl(*url)
+		processUrl(*url, aLangs, sLangs)
 	}
 }

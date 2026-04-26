@@ -72,8 +72,8 @@ crdl-windows.exe [options]
 -urls string
 -etp-rt string
 -season int
--audio-lang string
--subs-lang string
+-audio-langs string
+-subs-langs string
 -video-quality string
 -audio-quality string
 -tag string
@@ -94,6 +94,14 @@ crdl-windows.exe --url https://www.crunchyroll.com/watch/... --etp-rt TON_COOKIE
 ```bash
 crdl-windows.exe --url https://www.crunchyroll.com/series/... --season 1 --etp-rt TON_COOKIE
 ```
+
+**Multi-pistes Audio et Sous-titres**
+Télécharger un épisode avec plusieurs langues audio (ex: Japonais et Français) et tous les sous-titres disponibles :
+
+```bash
+crdl-windows.exe --url https://www.crunchyroll.com/watch/... --etp-rt TON_COOKIE --audio-langs "ja-JP,fr-FR" --subs-langs "all"
+```
+*Note : la première langue audio spécifiée sera définie comme la piste audio par défaut.*
 
 ---
 

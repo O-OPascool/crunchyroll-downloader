@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 
@@ -15,6 +16,18 @@ import (
 )
 
 const maxWorkers = 16
+
+// audioTrack represents a downloaded audio track with its language
+type audioTrack struct {
+	file string
+	lang string
+}
+
+// subTrack represents a downloaded subtitle track with its language
+type subTrack struct {
+	file string
+	lang string
+}
 
 func buildUrl(base, representationId, file string, partNum *int64) string {
 	if partNum != nil {
@@ -277,8 +290,25 @@ func downloadSubs(url string) string {
 	return filename
 }
 
-func downloadEpisode(contentId string, videoQuality, audioQuality, subtitlesLang *string, info EpisodeInfo) error {
-	dirName, outputFile := buildOutputPath(info, *videoQuality, *audioLang)
+// resolveVersionGUID finds the correct episode GUID for a given audio locale
+func resolveVersionGUID(info EpisodeInfo, audioLang string) (string, error) {
+	if info.EpisodeMetadata.AudioLocale == audioLang {
+		// Current version already matches
+		return "", nil // empty means "use the current contentId"
+	}
+	idx := slices.IndexFunc(info.EpisodeMetadata.Versions, func(v *DubVersion) bool {
+		return v.AudioLocale == audioLang
+	})
+	if idx == -1 {
+		return "", fmt.Errorf("audio locale %q not available for this episode", audioLang)
+	}
+	return info.EpisodeMetadata.Versions[idx].GUID, nil
+}
+
+func downloadEpisode(contentId string, videoQuality, audioQuality *string, audioLangs, subsLangs []string, info EpisodeInfo) error {
+	primaryAudioLang := audioLangs[0]
+
+	dirName, outputFile := buildOutputPath(info, *videoQuality, audioLangs)
 
 	if _, err := os.Stat(dirName); err != nil {
 		_ = os.MkdirAll(dirName, 0777)
@@ -290,7 +320,17 @@ func downloadEpisode(contentId string, videoQuality, audioQuality, subtitlesLang
 		return nil
 	}
 
-	episode := getEpisode(contentId)
+	// --- Resolve primary audio version ---
+	primaryContentId := contentId
+	guid, err := resolveVersionGUID(info, primaryAudioLang)
+	if err != nil {
+		return fmt.Errorf("primary audio: %w", err)
+	}
+	if guid != "" {
+		primaryContentId = guid
+	}
+
+	episode := getEpisode(primaryContentId)
 	fmt.Printf("⬇  S%02dE%02d - %s (%s)\n",
 		info.EpisodeMetadata.SeasonNumber,
 		info.EpisodeMetadata.EpisodeNumber,
@@ -322,20 +362,46 @@ func downloadEpisode(contentId string, videoQuality, audioQuality, subtitlesLang
 		return fmt.Errorf("no audio adaptation set found")
 	}
 
-	err = getLicense(*pssh, contentId, episode.Token)
+	err = getLicense(*pssh, primaryContentId, episode.Token)
 	if err != nil {
 		return fmt.Errorf("license error: %w", err)
 	}
 
-	cacheBase := fmt.Sprintf(".crdl_cache/%s", contentId)
+	cacheBase := fmt.Sprintf(".crdl_cache/%s", primaryContentId)
 
-	subtitles := episode.Subtitles[*subtitlesLang]
-	var subsFile string
-	if subtitles != nil {
-		fmt.Printf("  Subtitles (%s)...\n", languageNames[*subtitlesLang])
-		subsFile = downloadSubs(subtitles.URL)
+	// --- Download subtitles (multi) ---
+	var subTracks []subTrack
+	if len(subsLangs) == 1 && strings.ToLower(subsLangs[0]) == "all" {
+		// Download all available subtitles
+		for lang, sub := range episode.Subtitles {
+			if sub != nil {
+				langName := languageNames[lang]
+				if langName == "" {
+					langName = lang
+				}
+				fmt.Printf("  Subtitles (%s)...\n", langName)
+				subsFile := downloadSubs(sub.URL)
+				subTracks = append(subTracks, subTrack{file: subsFile, lang: lang})
+			}
+		}
+	} else {
+		for _, lang := range subsLangs {
+			sub := episode.Subtitles[lang]
+			if sub != nil {
+				langName := languageNames[lang]
+				if langName == "" {
+					langName = lang
+				}
+				fmt.Printf("  Subtitles (%s)...\n", langName)
+				subsFile := downloadSubs(sub.URL)
+				subTracks = append(subTracks, subTrack{file: subsFile, lang: lang})
+			} else {
+				fmt.Printf("  ⚠ Subtitles for %q not available, skipping...\n", lang)
+			}
+		}
 	}
 
+	// --- Download video (from primary manifest) ---
 	baseUrl, representationId := getBaseUrl(videoSet, true, *videoQuality)
 	if baseUrl == nil {
 		return fmt.Errorf("failed to get video URL, check --video-quality")
@@ -345,24 +411,95 @@ func downloadEpisode(contentId string, videoQuality, audioQuality, subtitlesLang
 		return fmt.Errorf("video download: %w", err)
 	}
 
+	// --- Download audio tracks (multi) ---
+	var audioTracks []audioTrack
+
+	// Primary audio track (from the already-parsed manifest)
 	audioBaseUrl, audioRepresentationId := getBaseUrl(audioSet, false, *audioQuality)
 	if audioBaseUrl == nil {
-		return fmt.Errorf("failed to get audio URL, check --audio-quality")
+		return fmt.Errorf("failed to get audio URL for %s, check --audio-quality", primaryAudioLang)
 	}
-	audioFile, err := downloadParts(audioBaseUrl, audioRepresentationId, audioSet, cacheBase+"/audio", "Audio")
+	langName := languageNames[primaryAudioLang]
+	if langName == "" {
+		langName = primaryAudioLang
+	}
+	audioFile, err := downloadParts(audioBaseUrl, audioRepresentationId, audioSet, cacheBase+"/audio_"+primaryAudioLang, fmt.Sprintf("Audio (%s)", langName))
 	if err != nil {
-		return fmt.Errorf("audio download: %w", err)
+		return fmt.Errorf("audio download (%s): %w", primaryAudioLang, err)
+	}
+	audioTracks = append(audioTracks, audioTrack{file: audioFile, lang: primaryAudioLang})
+
+	// Additional audio tracks from other versions
+	for _, lang := range audioLangs[1:] {
+		guid, err := resolveVersionGUID(info, lang)
+		if err != nil {
+			fmt.Printf("  ⚠ Audio %q not available, skipping: %v\n", lang, err)
+			continue
+		}
+		versionContentId := primaryContentId
+		if guid != "" {
+			versionContentId = guid
+		}
+
+		versionEpisode := getEpisode(versionContentId)
+		versionManifest, err := parseManifest(versionEpisode.ManifestURL)
+		if err != nil {
+			fmt.Printf("  ⚠ Could not parse manifest for audio %q: %v\n", lang, err)
+			continue
+		}
+		if len(versionManifest.Period) == 0 {
+			fmt.Printf("  ⚠ Empty manifest for audio %q, skipping\n", lang)
+			continue
+		}
+
+		versionPssh := getPssh(versionManifest)
+		if versionPssh != nil {
+			if err := getLicense(*versionPssh, versionContentId, versionEpisode.Token); err != nil {
+				fmt.Printf("  ⚠ License error for audio %q: %v\n", lang, err)
+				continue
+			}
+		}
+
+		versionAudioSet := findAdaptationSet(versionManifest.Period[0], "audio")
+		if versionAudioSet == nil {
+			fmt.Printf("  ⚠ No audio adaptation set for %q, skipping\n", lang)
+			continue
+		}
+
+		versionBaseUrl, versionRepId := getBaseUrl(versionAudioSet, false, *audioQuality)
+		if versionBaseUrl == nil {
+			fmt.Printf("  ⚠ Audio quality not found for %q, skipping\n", lang)
+			continue
+		}
+
+		langName := languageNames[lang]
+		if langName == "" {
+			langName = lang
+		}
+		versionAudioFile, err := downloadParts(versionBaseUrl, versionRepId, versionAudioSet,
+			fmt.Sprintf(".crdl_cache/%s/audio_%s", versionContentId, lang),
+			fmt.Sprintf("Audio (%s)", langName))
+		if err != nil {
+			fmt.Printf("  ⚠ Audio download failed for %q: %v\n", lang, err)
+			continue
+		}
+
+		if success := deleteStream(versionContentId, versionEpisode.Token); !success {
+			fmt.Println("  Warning: failed to delete stream token for", lang)
+		}
+
+		audioTracks = append(audioTracks, audioTrack{file: versionAudioFile, lang: lang})
 	}
 
-	if success := deleteStream(contentId, episode.Token); !success {
+	if success := deleteStream(primaryContentId, episode.Token); !success {
 		fmt.Println("Warning: failed to delete stream token")
 	}
 
-	mergeEverything(videoFile, audioFile, subsFile, outputFile, subtitlesLang, info)
+	mergeEverything(videoFile, audioTracks, subTracks, outputFile, info)
 	return nil
 }
 
-func downloadSeason(videoQuality, audioQuality, subtitlesLang *string, episodes []SeasonEpisode) {
+func downloadSeason(videoQuality, audioQuality *string, audioLangs, subsLangs []string, episodes []SeasonEpisode) {
 	if len(episodes) == 0 {
 		fmt.Println("⚠  No episodes found in this season, skipping...")
 		return
@@ -382,7 +519,7 @@ func downloadSeason(videoQuality, audioQuality, subtitlesLang *string, episodes 
 			},
 			Title: episode.Title,
 		}
-		if err := downloadEpisode(episode.ID, videoQuality, audioQuality, subtitlesLang, info); err != nil {
+		if err := downloadEpisode(episode.ID, videoQuality, audioQuality, audioLangs, subsLangs, info); err != nil {
 			fmt.Printf("⚠  Error on S%02dE%02d: %s, skipping...\n\n",
 				episode.SeasonNumber, episode.EpisodeNumber, err)
 		}
