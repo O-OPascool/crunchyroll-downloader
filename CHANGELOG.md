@@ -1,51 +1,5 @@
 # Changelog
 
-## [Pascool-5] — 2026-04-25
-
-### Corrections
-- **Crash « Failed to get audio URL »** : les AdaptationSets vidéo/audio ne sont plus cherchés par index fixe (`[0]`/`[1]`) — un lookup dynamique par `MimeType`/`ContentType` est utilisé, avec fallback sur les propriétés des Representations
-- **Crash « PSSH not found »** : la recherche PSSH explore maintenant les ContentProtection au niveau **Representation** en plus du niveau **AdaptationSet**
-- **PSSH PlayReady au lieu de Widevine** : `getPssh` filtre désormais par le `schemeIdUri` Widevine (`edef8ba9-...`) pour ne pas retourner un PSSH PlayReady par erreur
-- **Crash « nil SegmentTemplate »** : `downloadParts` résout le SegmentTemplate au niveau AdaptationSet puis Representation, au lieu de supposer qu'il est toujours au niveau AdaptationSet
-- **Support des manifestes SegmentBase** : ajout de `downloadWhole` pour les épisodes dont le MPD ne contient pas de SegmentTemplate (fichier unique via BaseURL)
-- **Crash silencieux sur manifest HTTP error** : `parseManifest` utilise maintenant `DoRequest` (avec refresh token 401) et vérifie le code HTTP au lieu de parser silencieusement une réponse d'erreur
-- **Crash en chaîne sur batch download** : `downloadEpisode` retourne une erreur au lieu de `panic`/`os.Exit` — un épisode en erreur est sauté et le téléchargement continue
-
-### Améliorations
-- **Fallback qualité audio** : si la qualité demandée (ex: `192k`) n'existe pas dans le manifest, la meilleure qualité disponible est utilisée automatiquement (avec un avertissement affiché)
-- **Recherche PSSH élargie** : tous les AdaptationSets et toutes les Representations sont inspectés, plus seulement le premier
-
----
-
-## [Pascool-4] — 2026-04-25
-
-### Corrections
-- **Crash JSON `Episode.error`** : l'API Crunchyroll peut renvoyer le champ `error` sous forme de nombre au lieu d'une string — le type est maintenant `json.RawMessage` pour accepter n'importe quel type
-- **Crash sur URL mal formatée** : `processUrl` ne panic plus si l'URL contient moins de 5 segments
-- **Crash sur épisode introuvable** : `getEpisodeInfo` retourne une erreur propre au lieu de panic sur un tableau `data` vide
-- **Crash sur saison vide** : `downloadSeason` vérifie que la liste d'épisodes n'est pas vide avant d'y accéder
-- **Boucle infinie sur token invalide** : `DoRequest` limitée à 1 retry en cas de 401, au lieu d'une récursion infinie
-- **Erreur silencieuse dans `token.go`** : l'erreur de `io.ReadAll` était ignorée (variable `err` shadowed) — maintenant correctement vérifiée
-
-### Builds
-- Binaires cross-compilés : `crdl-windows.exe`, `crdl-macos-arm64`, `crdl-macos-intel`, `crdl-linux`
-
----
-
-## [Pascool-3] — 2026-04-25
-
-### Améliorations
-- **Restyling sous-titres entièrement revu** à partir d'un modèle fansub de référence :
-  - Police **Trebuchet MS 66px** (calibrée pour 1920×1080, identique aux fansubs français professionnels)
-  - Contour noir 3px + ombre 3px pour une lisibilité maximale
-  - Marges 75px (plus d'espace par rapport au bord)
-  - Styles complets : `Default`, `Italique`, `TiretsDefault`, `TiretsItalique`, `Sign`
-  - Les panneaux/textes à l'écran (`Sign`, `Titre`, `Caption`) conservent leur style dédié (Arial, fond sombre)
-  - Les noms de styles CR originaux sont préservés (les événements continuent de fonctionner)
-  - `ScaledBorderAndShadow: yes` forcé pour un rendu correct sur tous les players
-
----
-
 ## [Pascool-2] — 2026-04-25
 
 ### Ajouts
@@ -74,7 +28,6 @@
 - Suppression de la fonction `sanitize` dupliquée (maintenant `sanitizeForFS` dans `output.go`)
 - Affichage `⏭` propre pour les épisodes déjà téléchargés
 
-
 ---
 
 ## [original] — CuteTenshii
@@ -85,3 +38,40 @@
 - 10 workers parallèles
 - Retry avec backoff sur erreur réseau
 - Batch download via fichier texte
+
+---
+
+## [Pascool-3] — 2026-04-25
+
+### Améliorations
+- **Restyling sous-titres entièrement revu** à partir d'un modèle fansub de référence :
+  - Police **Trebuchet MS 66px** (calibrée pour 1920×1080, identique aux fansubs français professionnels)
+  - Contour noir 3px + ombre 3px pour une lisibilité maximale
+  - Marges 75px (plus d'espace par rapport au bord)
+  - Styles complets : `Default`, `Italique`, `TiretsDefault`, `TiretsItalique`, `Sign`
+  - Les panneaux/textes à l'écran (`Sign`, `Titre`, `Caption`) conservent leur style dédié (Arial, fond sombre)
+  - Les noms de styles CR originaux sont préservés (les événements continuent de fonctionner)
+  - `ScaledBorderAndShadow: yes` forcé pour un rendu correct sur tous les players
+
+---
+
+## [Pascool-4] — 2026-04-25
+
+### Corrections
+- **Taille de police corrigée** : le PlayRes était en 640×360 dans les fichiers CR mais les styles étaient calibrés pour 1920×1080, ce qui rendait les sous-titres énormes. Le PlayRes est maintenant forcé à 640×360 avec les valeurs exactes du modèle (23px, marges 20).
+- **Tag renommé** : `sipha` → `Pascool` (défaut et partout dans les noms de fichiers)
+
+---
+
+## [Pascool-5] — 2026-04-25
+
+### Corrections
+- **PSSH not found corrigé** : certains épisodes CR placent le PSSH dans un `AdaptationSet` différent du premier, ou directement dans une `Representation`. La recherche parcourt maintenant tout le manifeste (tous les `Period`, `AdaptationSet` et `Representation`) au lieu de s'arrêter au premier bloc.
+- Au lieu de planter avec `panic`, l'épisode est maintenant **ignoré avec un warning** `⚠` si le PSSH reste vraiment introuvable, et le téléchargement continue avec l'épisode suivant.
+
+---
+
+## [Pascool-6] — 2026-05-06
+
+### Corrections
+- **Invalid URL format corrigé** : le code n'acceptait que les IDs de 9 ou 14 caractères. CR utilise maintenant des IDs de longueurs variables (ex: `GT00365559` = 10 chars). La vérification accepte maintenant tout ID entre 9 et 20 caractères.

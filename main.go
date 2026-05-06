@@ -10,17 +10,16 @@ import (
 )
 
 var (
-	token        = ""
-	audioLangs   = flag.String("audio-langs", "ja-JP", "Comma-separated list of audio languages (e.g. \"ja-JP,fr-FR\")")
-	subsLangs    = flag.String("subs-langs", "en-US", "Comma-separated list of subtitle languages, or \"all\" (e.g. \"en-US,fr-FR\")")
-	videoQuality = flag.String("video-quality", "1080p", "Video quality")
-	audioQuality = flag.String("audio-quality", "192k", "Audio quality")
-	seasonNumber = flag.Int("season", 0, "Season number. Not used if an episode link is entered")
-	etpRt        = flag.String("etp-rt", "", "The \"etp_rt\" cookie value of your account")
-	releaseTag   = flag.String("tag", "Pascool", "Release tag appended to the filename")
+	token         = ""
+	audioLangs    = flag.String("audio-langs", "ja-JP", "Comma-separated list of audio languages (e.g. \"ja-JP,en-US\")")
+	subsLangs     = flag.String("subs-langs", "en-US", "Comma-separated list of subtitle languages, or \"all\"")
+	videoQuality  = flag.String("video-quality", "1080p", "Video quality")
+	audioQuality  = flag.String("audio-quality", "192k", "Audio quality")
+	seasonNumber  = flag.Int("season", 0, "Season number. Not used if an episode link is entered")
+	etpRt         = flag.String("etp-rt", "", "The \"etp_rt\" cookie value of your account")
+	releaseTag    = flag.String("tag", "Pascool", "Release tag appended to the filename")
 )
 
-// parseCommaSeparated splits a comma-separated flag value into a trimmed slice
 func parseCommaSeparated(val string) []string {
 	parts := strings.Split(val, ",")
 	var result []string
@@ -33,15 +32,10 @@ func parseCommaSeparated(val string) []string {
 	return result
 }
 
-func processUrl(url string, aLangs, sLangs []string) {
-	parts := strings.Split(url, "/")
-	if len(parts) < 5 {
-		fmt.Printf("Invalid URL format: %s\n", url)
-		return
-	}
-	contentType := parts[3]
-	contentId := parts[4]
-	if len(contentId) != 9 && len(contentId) != 14 {
+func processUrl(url string) {
+	contentType := strings.Split(url, "/")[3]
+	contentId := strings.Split(url, "/")[4]
+	if len(contentId) < 9 || len(contentId) > 20 {
 		fmt.Printf("Invalid URL format: %s\n", url)
 		return
 	}
@@ -53,14 +47,18 @@ func processUrl(url string, aLangs, sLangs []string) {
 	if contentType == "watch" {
 		info, err := getEpisodeInfo(contentId)
 		if err != nil {
-			fmt.Printf("Error fetching episode info: %s\n", err)
+			fmt.Printf("Failed to get episode info: %v\n", err)
 			return
 		}
+		aLangs := parseCommaSeparated(*audioLangs)
+		sLangs := parseCommaSeparated(*subsLangs)
 		if err := downloadEpisode(contentId, videoQuality, audioQuality, aLangs, sLangs, info); err != nil {
-			fmt.Printf("⚠  Error: %s\n", err)
+			fmt.Printf("Error downloading episode: %v\n", err)
 		}
 	} else {
 		seasons := getSeasons(contentId)
+		aLangs := parseCommaSeparated(*audioLangs)
+		sLangs := parseCommaSeparated(*subsLangs)
 
 		if *seasonNumber != 0 {
 			var seasonId string
@@ -100,9 +98,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	aLangs := parseCommaSeparated(*audioLangs)
-	sLangs := parseCommaSeparated(*subsLangs)
-
 	token = GetAccessToken(*etpRt)
 
 	if *urlsFile != "" {
@@ -125,10 +120,10 @@ func main() {
 		fmt.Printf("Found %d URLs to download\n\n", len(urls))
 		for i, u := range urls {
 			fmt.Printf("=== [%d/%d] %s ===\n", i+1, len(urls), u)
-			processUrl(u, aLangs, sLangs)
+			processUrl(u)
 			fmt.Println()
 		}
 	} else {
-		processUrl(*url, aLangs, sLangs)
+		processUrl(*url)
 	}
 }

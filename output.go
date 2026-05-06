@@ -29,15 +29,18 @@ func getLangTag(audioLangs []string) string {
 }
 
 // buildOutputPath returns (directory, full output path) for an episode
-// Format: Title.S01E01.CR.WEBDL.Multi.1080p.x265-tag.mkv
+// Format: Title/S1/Title.S01E01.CR.WEBDL.Multi.1080p.x264-tag.mkv
 func buildOutputPath(info EpisodeInfo, videoQuality string, audioLangs []string) (string, string) {
-	dirName := sanitizeForFS(info.EpisodeMetadata.SeriesTitle)
-	titleDots := strings.ReplaceAll(dirName, " ", ".")
+	seriesName := sanitizeForFS(info.EpisodeMetadata.SeriesTitle)
+	titleDots := strings.ReplaceAll(seriesName, " ", ".")
 	season := fmt.Sprintf("S%02d", info.EpisodeMetadata.SeasonNumber)
 	episode := fmt.Sprintf("E%02d", info.EpisodeMetadata.EpisodeNumber)
 	langTag := getLangTag(audioLangs)
 
-	filename := fmt.Sprintf("%s.%s%s.CR.WEBDL.%s.%s.x265-%s.mkv",
+	// Create a subfolder for the season, e.g., "Series Title/S1"
+	dirName := fmt.Sprintf("%s/S%d", seriesName, info.EpisodeMetadata.SeasonNumber)
+
+	filename := fmt.Sprintf("%s.%s%s.CR.WEBDL.%s.%s.x264-%s.mkv",
 		titleDots, season, episode, langTag, videoQuality, *releaseTag)
 
 	return dirName, fmt.Sprintf("%s/%s", dirName, filename)

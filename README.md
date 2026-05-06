@@ -150,3 +150,49 @@ The `etp_rt` cookie is required.
 ```
 crdl-windows.exe [options]
 ```
+
+**Options:**
+
+```
+-url string
+-urls string
+-etp-rt string
+-season int
+-audio-langs string
+-subs-langs string
+-video-quality string
+-audio-quality string
+-tag string
+```
+
+---
+
+### Examples
+
+**Single episode**
+
+```bash
+crdl-windows.exe --url https://www.crunchyroll.com/watch/... --etp-rt YOUR_COOKIE
+```
+
+**Full season**
+
+```bash
+crdl-windows.exe --url https://www.crunchyroll.com/series/... --season 1 --etp-rt YOUR_COOKIE
+```
+
+**Multi-track Audio and Subtitles**
+Download an episode with multiple audio languages (e.g., Japanese and French) and all available subtitles:
+
+```bash
+crdl-windows.exe --url https://www.crunchyroll.com/watch/... --etp-rt YOUR_COOKIE --audio-langs "ja-JP,fr-FR" --subs-langs "all"
+```
+*Note: The first specified audio language will be set as the default audio track.*
+
+---
+
+### Output format
+
+```
+SeriesTitle.S01E01.CR.WEBDL.VOSTFR.1080p.x265-Pascool.mkv
+```
